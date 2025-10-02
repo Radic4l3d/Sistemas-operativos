@@ -7,4 +7,4 @@ También, los procesos padre deberán imprimir un mensaje cuando terminen de eje
 En otra terminal imprime el árbol de procesos del sistema y realiza una captura de pantalla donde se muestre el sub árbol de procesos creado en este ejercicio.  
 En la siguiente imagen se ve como es el árbol de procesos de este ejercicio:
 
-![Arbol](/arbol.png)
+![Arbol](arbol.png)
