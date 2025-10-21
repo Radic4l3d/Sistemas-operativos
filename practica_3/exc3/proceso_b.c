@@ -1,70 +1,75 @@
-// Archivo: procesoB.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <signal.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <string.h>
+#include "comms.h" // Incluimos la cabecera común
 
-// La tubería que usaremos para comunicar el PID
-#define FIFO_PATH "/tmp/pid_fifo"
+// Puntero global a la memoria compartida
+struct comms_data *shm_ptr;
 
-// Variable global para controlar el bucle principal.
-// 'volatile sig_atomic_t' es el tipo correcto para variables
-// modificadas por un manejador de señales.
-volatile sig_atomic_t terminar = 0;
+// ---- Handlers de Señales ----
 
-// Manejador para la señal SIGUSR1 (opción 3 del menú)
-void manejador_mensaje(int signum) {
-    // NOTA: printf no es 100% seguro en manejadores de señales,
-    // pero para este ejemplo es aceptable. La forma más segura
-    // sería usar la llamada al sistema write().
-    char msg[] = "\n[Proceso B] Mensaje recibido del Proceso A.\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+// Handler para SIGUSR1 (Imprimir Mensaje)
+void handler_mensaje(int sig) {
+    if (shm_ptr) {
+        printf("\n[B] Mensaje de A: %s\n", shm_ptr->mensaje);
+    }
+    // (En algunos sistemas antiguos, necesitarías re-registrar el handler aquí)
 }
 
-// Manejador para la señal SIGTERM (opción 4 del menú)
-void manejador_terminar(int signum) {
-    char msg[] = "\n[Proceso B] Señal de terminación recibida. Adiós.\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    terminar = 1; // Cambia la bandera para salir del bucle
+// Handler para SIGTERM (Terminación Limpia)
+void handler_terminar(int sig) {
+    printf("\n[B] Recibida señal de terminación. Adiós.\n");
+    // Des-mapear la memoria compartida
+    if (shmdt(shm_ptr) == -1) {
+        perror("[B] shmdt");
+    }
+    exit(0);
 }
 
 int main() {
-    pid_t mi_pid = getpid();
-    printf("[Proceso B] Iniciado con PID: %d\n", mi_pid);
+    key_t key;
+    int shmid;
 
-    // --- Comunicación del PID via FIFO ---
-    // Esperamos a que el proceso A cree la tubería
-    int fd;
-    printf("[Proceso B] Abriendo FIFO para enviar mi PID...\n");
-    // Abrimos en modo escritura. Se bloqueará si A no ha abierto para leer.
-    fd = open(FIFO_PATH, O_WRONLY);
-    if (fd == -1) {
-        perror("[Proceso B] Error al abrir el FIFO");
-        exit(EXIT_FAILURE);
+    // 1. Configurar Handlers
+    signal(SIGUSR1, handler_mensaje);
+    signal(SIGTERM, handler_terminar);
+    
+    // (No podemos manejar SIGSTOP o SIGCONT, el kernel lo hace por nosotros)
+
+    // 2. Generar la clave IPC
+    key = ftok(KEY_PATHNAME, KEY_ID);
+    if (key == -1) {
+        perror("[B] ftok");
+        exit(1);
     }
 
-    // Escribimos nuestro PID en el FIFO
-    if (write(fd, &mi_pid, sizeof(mi_pid)) == -1) {
-        perror("[Proceso B] Error al escribir en el FIFO");
-        close(fd);
-        exit(EXIT_FAILURE);
+    // 3. Obtener el ID de la memoria compartida
+    // (IPC_CREAT asegura que la crea si no existe)
+    shmid = shmget(key, sizeof(struct comms_data), IPC_CREAT | 0666);
+    if (shmid == -1) {
+        perror("[B] shmget");
+        exit(1);
     }
-    close(fd);
-    printf("[Proceso B] PID enviado a Proceso A. Iniciando contador.\n");
 
-    // --- Configuración de Señales ---
-    signal(SIGUSR1, manejador_mensaje);
-    signal(SIGTERM, manejador_terminar);
+    // 4. Mapear (attach) la memoria compartida
+    shm_ptr = (struct comms_data *)shmat(shmid, NULL, 0);
+    if (shm_ptr == (void *)-1) {
+        perror("[B] shmat");
+        exit(1);
+    }
 
-    // --- Bucle Principal del Contador ---
-    long long contador = 0;
-    while (!terminar) {
-        printf("Contador: %lld\n", contador);
-        contador++;
+    // 5. Escribir su PID en la memoria compartida
+    shm_ptr->pid_b = getpid();
+    printf("[B] Proceso B iniciado (PID: %d). Esperando a A...\n", getpid());
+
+    // 6. Iniciar el bucle del contador
+    int contador = 0;
+    while (1) {
+        printf("[B] Contador: %d\n", contador++);
+        fflush(stdout); // Asegurarse de que se imprima inmediatamente
         sleep(1);
     }
 
